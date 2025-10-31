@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 // FIX: Import Language type for state management.
-import { type View, type User, type BatchProcessorPreset, type Language } from './types';
+import { type View, type User, type BatchProcessorPreset, type Language, UserStatus } from './types';
 import Sidebar from './components/Sidebar';
 import AiTextSuiteView from './components/views/AiTextSuiteView';
 import AiImageSuiteView from './components/views/AiImageSuiteView';
@@ -12,7 +12,7 @@ import GalleryView from './components/views/GalleryView';
 import WelcomeAnimation from './components/WelcomeAnimation';
 import LibraryView from './components/views/LibraryView';
 import { MenuIcon, LogoIcon, XIcon, SunIcon, MoonIcon, CheckCircleIcon, AlertTriangleIcon, PartyPopperIcon, RefreshCwIcon } from './components/Icons';
-import { signOutUser, logActivity, getVeoAuthTokens, getTrialMasterApiKey, getAvailableApiKeys, claimApiKey } from './services/userService';
+import { signOutUser, logActivity, getVeoAuthTokens, getTrialMasterApiKey, getAvailableApiKeys, claimApiKey, updateUserLastSeen } from './services/userService';
 import { createChatSession, streamChatResponse, isImageModelHealthy } from './services/geminiService';
 import Spinner from './components/common/Spinner';
 import { loadData, saveData } from './services/indexedDBService';
@@ -29,6 +29,7 @@ import ApiKeyStatus from './components/ApiKeyStatus';
 import { clearLogs } from './services/aiLogService';
 import { clearVideoCache } from './services/videoCacheService';
 import localforage from 'localforage';
+import { supabase, type Database } from './services/supabaseClient';
 
 
 interface VideoGenPreset {
@@ -129,6 +130,16 @@ const App: React.FC = () => {
   const handleUserUpdate = useCallback((updatedUser: User) => {
     setCurrentUser(updatedUser);
     localStorage.setItem('currentUser', JSON.stringify(updatedUser));
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    await signOutUser();
+    localStorage.removeItem('currentUser');
+    sessionStorage.removeItem('monoklix_session_api_key'); // Clean up session key
+    sessionStorage.removeItem('session_started_at'); // Clean up session start time
+    setCurrentUser(null);
+    setTempApiKey(null);
+    setActiveView('home');
   }, []);
 
   const handleClearCacheAndRefresh = () => {
@@ -324,10 +335,59 @@ const App: React.FC = () => {
     setupChatSession();
   }, [activeApiKey]);
   
+   // Effect for user heartbeat (active status)
+    useEffect(() => {
+        if (currentUser) {
+            // Initial update on login
+            updateUserLastSeen(currentUser.id);
+
+            const heartbeatInterval = setInterval(() => {
+                updateUserLastSeen(currentUser.id);
+            }, 30000); // Send a heartbeat every 30 seconds
+
+            return () => clearInterval(heartbeatInterval);
+        }
+    }, [currentUser]);
+
+    // Effect for real-time remote logout listener
+    useEffect(() => {
+        if (!currentUser || currentUser.status === 'trial') return;
+
+        const channel = supabase
+            .channel(`user-session-channel-${currentUser.id}`)
+            .on(
+                'postgres_changes',
+                {
+                    event: 'UPDATE',
+                    schema: 'public',
+                    table: 'users',
+                    filter: `id=eq.${currentUser.id}`,
+                },
+                (payload) => {
+                    const newUserData = payload.new as Database['public']['Tables']['users']['Row'];
+                    const forceLogoutAt = newUserData.force_logout_at;
+                    
+                    if (forceLogoutAt) {
+                        const sessionStartedAt = sessionStorage.getItem('session_started_at');
+                        if (sessionStartedAt && new Date(forceLogoutAt) > new Date(sessionStartedAt)) {
+                            alert('Your session has been terminated by an administrator.');
+                            handleLogout();
+                        }
+                    }
+                }
+            )
+            .subscribe();
+        
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }, [currentUser, handleLogout]);
+
   const handleLoginSuccess = async (user: User) => {
     handleUserUpdate(user);
     setJustLoggedIn(true);
     logActivity('login');
+    sessionStorage.setItem('session_started_at', new Date().toISOString());
 
     // For trial users, assign the master trial key.
     if (user.status === 'trial') {
@@ -347,15 +407,6 @@ const App: React.FC = () => {
   };
 
 
-  const handleLogout = async () => {
-    await signOutUser();
-    localStorage.removeItem('currentUser');
-    sessionStorage.removeItem('monoklix_session_api_key'); // Clean up session key
-    setCurrentUser(null);
-    setTempApiKey(null);
-    setActiveView('home');
-  };
-  
   const handleAiSupportSend = useCallback(async (prompt: string) => {
     if (!prompt.trim() || !aiSupportChat || isAiSupportLoading) return;
 
@@ -497,14 +548,20 @@ const App: React.FC = () => {
   let isBlocked = false;
   let blockMessage = { title: "Access Denied", body: "" };
 
+  const isSubscriptionActive = currentUser.status === 'subscription' && currentUser.subscriptionExpiry && Date.now() < currentUser.subscriptionExpiry;
+
   const adminOnlyViews: View[] = ['social-post-studio'];
 
   if (adminOnlyViews.includes(activeView) && currentUser.role !== 'admin') {
       isBlocked = true;
       blockMessage = { title: "Access Denied", body: "This feature is only available for administrators." };
-  } else if (currentUser.status === 'admin' || currentUser.status === 'lifetime') {
+  } else if (currentUser.status === 'admin' || currentUser.status === 'lifetime' || isSubscriptionActive) {
     isBlocked = false;
   } 
+  else if (currentUser.status === 'subscription' && !isSubscriptionActive) {
+      isBlocked = true;
+      blockMessage = { title: "Subscription Expired", body: "Your plan has expired. To continue using all features, please renew your subscription. [BUTTON]Renew Now[URL]https://monoklix.com/step/monoklix-checkout/" };
+  }
   // Apply restrictions for trial users
   else if (currentUser.status === 'trial') {
     const usageCount = currentUser.storyboardUsageCount || 0;

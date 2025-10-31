@@ -97,6 +97,8 @@ export interface User {
   storyboardUsageCount?: number;
   totalImage?: number;
   totalVideo?: number;
+  lastSeenAt?: string;
+  forceLogoutAt?: string;
 }
 
 export type LoginResult = { success: true; user: User } | { success: false; message: string };

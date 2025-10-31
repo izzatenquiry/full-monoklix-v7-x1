@@ -85,11 +85,14 @@ const ProfilePanel: React.FC<Pick<SettingsViewProps, 'currentUser' | 'onUserUpda
 
     const accountStatus = getAccountStatus(currentUser);
     let expiryInfo = null;
-    if (currentUser.status === 'subscription' && currentUser.createdAt) {
-        const oneYearInMillis = 365 * 24 * 60 * 60 * 1000;
-        const registrationDate = new Date(currentUser.createdAt);
-        const expiryDate = new Date(registrationDate.getTime() + oneYearInMillis);
-        expiryInfo = `Expires on: ${expiryDate.toLocaleDateString()}`;
+    if (currentUser.status === 'subscription' && currentUser.subscriptionExpiry) {
+        const expiryDate = new Date(currentUser.subscriptionExpiry);
+        const isExpired = Date.now() > expiryDate.getTime();
+        expiryInfo = (
+            <span className={isExpired ? 'text-red-500 font-bold' : ''}>
+                Expires on: {expiryDate.toLocaleDateString()} {isExpired && '(Expired)'}
+            </span>
+        );
     }
 
 

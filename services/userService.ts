@@ -113,6 +113,8 @@ const mapProfileToUser = (
     webhookUrl: profile.webhook_url || undefined,
     totalImage: profile.total_image ?? undefined,
     totalVideo: profile.total_video ?? undefined,
+    lastSeenAt: profile.last_seen_at || undefined,
+    forceLogoutAt: profile.force_logout_at || undefined,
   };
 };
 
@@ -193,14 +195,57 @@ export const getAllUsers = async (): Promise<User[] | null> => {
 
 // Update a user's status
 export const updateUserStatus = async (userId: string, status: UserStatus): Promise<boolean> => {
+    const updatePayload: { status: UserStatus; subscription_expiry?: string | null } = { status: status };
+
+    // If status is NOT subscription, clear the expiry date.
+    if (status !== 'subscription') {
+        updatePayload.subscription_expiry = null;
+    }
+
     const { error } = await supabase
         .from('users')
-        // FIX: This operation is now correctly typed after fixing supabaseClient.ts types.
-        .update({ status: status })
+        .update(updatePayload)
         .eq('id', userId);
 
     if (error) {
         console.error("Failed to update status:", getErrorMessage(error));
+        return false;
+    }
+    return true;
+};
+
+/**
+ * Sets a user to the 'subscription' status and calculates their expiry date.
+ */
+export const updateUserSubscription = async (userId: string, expiryMonths: 6 | 12): Promise<boolean> => {
+    const expiryDate = new Date();
+    expiryDate.setMonth(expiryDate.getMonth() + expiryMonths);
+
+    const { error } = await supabase
+        .from('users')
+        .update({ status: 'subscription', subscription_expiry: expiryDate.toISOString() })
+        .eq('id', userId);
+
+    if (error) {
+        console.error("Failed to update subscription:", getErrorMessage(error));
+        return false;
+    }
+    return true;
+};
+
+
+/**
+ * Triggers a remote logout for a user by setting the `force_logout_at` timestamp.
+ * This does not change their account status.
+ */
+export const forceUserLogout = async (userId: string): Promise<boolean> => {
+    const { error } = await supabase
+        .from('users')
+        .update({ force_logout_at: new Date().toISOString() })
+        .eq('id', userId);
+
+    if (error) {
+        console.error("Failed to force logout:", getErrorMessage(error));
         return false;
     }
     return true;
@@ -516,7 +561,8 @@ export const getVeoAuthTokens = async (): Promise<{ token: string; createdAt: st
     }
 
     if (data && data.length > 0) {
-        return data.map(item => ({ token: item.token, createdAt: item.created_at }));
+        // Reverse the array so the oldest of the 5 latest tokens is first.
+        return data.reverse().map(item => ({ token: item.token, createdAt: item.created_at }));
     }
     
     return null;
@@ -659,5 +705,30 @@ export const incrementVideoUsage = async (userId: string): Promise<{ success: tr
         const message = getErrorMessage(error);
         console.error("Failed to increment video usage:", message);
         return { success: false, message };
+    }
+};
+
+/**
+ * Updates the last seen timestamp for a given user. This is a fire-and-forget
+ * operation used for tracking user activity.
+ * @param {string} userId - The ID of the user to update.
+ */
+export const updateUserLastSeen = async (userId: string): Promise<void> => {
+    // Trial users are not in the 'users' table, so we skip this for them.
+    if (userId.startsWith('trial-')) {
+        return;
+    }
+    try {
+        const { error } = await supabase
+            .from('users')
+            .update({ last_seen_at: new Date().toISOString() })
+            .eq('id', userId);
+        
+        if (error) {
+            // This is a background task, so we just log the error without throwing
+            console.warn('Failed to update last_seen_at:', getErrorMessage(error));
+        }
+    } catch (error) {
+        console.error('Exception while updating last_seen_at:', getErrorMessage(error));
     }
 };

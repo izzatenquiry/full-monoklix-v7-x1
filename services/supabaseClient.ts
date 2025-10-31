@@ -84,6 +84,8 @@ export interface Database {
           webhook_url: string | null
           total_image: number | null
           total_video: number | null
+          last_seen_at: string | null
+          force_logout_at: string | null
         }
         Insert: { // The data you can insert
           id?: string // id is auto-generated
@@ -101,6 +103,8 @@ export interface Database {
           webhook_url?: string | null
           total_image?: number | null
           total_video?: number | null
+          last_seen_at?: string | null
+          force_logout_at?: string | null
         }
         Update: { // The data you can update
           full_name?: string | null
@@ -116,6 +120,8 @@ export interface Database {
           webhook_url?: string | null
           total_image?: number | null
           total_video?: number | null
+          last_seen_at?: string | null
+          force_logout_at?: string | null
         }
         // FIX: Added Relationships array to fix Supabase type inference issues, resolving 'never' types.
         Relationships: []

@@ -1,10 +1,11 @@
 import React from 'react';
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getAllUsers, updateUserStatus, replaceUsers, exportAllUserData } from '../../services/userService';
+import { getAllUsers, updateUserStatus, replaceUsers, exportAllUserData, forceUserLogout, updateUserSubscription } from '../../services/userService';
 import { type User, type UserStatus } from '../../types';
-import { UsersIcon, XIcon, DownloadIcon, UploadIcon, CheckCircleIcon } from '../Icons';
+import { UsersIcon, XIcon, DownloadIcon, UploadIcon, CheckCircleIcon, AlertTriangleIcon } from '../Icons';
 import Spinner from '../common/Spinner';
 import ApiHealthCheckModal from '../common/ApiHealthCheckModal';
+import ConfirmationModal from '../common/ConfirmationModal';
 
 const formatStatus = (user: User): { text: string; color: 'green' | 'yellow' | 'red' | 'blue' } => {
     switch(user.status) {
@@ -62,6 +63,19 @@ const TrialCountdown: React.FC<{ expiry: number }> = ({ expiry }) => {
     );
 };
 
+const getTimeAgo = (date: Date): string => {
+    const now = new Date();
+    const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+};
+
 
 const AdminDashboardView: React.FC = () => {
     const [users, setUsers] = useState<User[] | null>([]);
@@ -70,10 +84,12 @@ const AdminDashboardView: React.FC = () => {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [selectedUser, setSelectedUser] = useState<User | null>(null);
     const [newStatus, setNewStatus] = useState<UserStatus>('trial');
+    const [subscriptionDuration, setSubscriptionDuration] = useState<6 | 12>(6);
     const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
     const [isHealthModalOpen, setIsHealthModalOpen] = useState(false);
     const [userForHealthCheck, setUserForHealthCheck] = useState<User | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const [isConfirmLogoutOpen, setIsConfirmLogoutOpen] = useState(false);
 
     const fetchUsers = useCallback(async () => {
         setLoading(true);
@@ -101,7 +117,14 @@ const AdminDashboardView: React.FC = () => {
     const handleSaveStatus = async () => {
         if (!selectedUser) return;
         
-        if (await updateUserStatus(selectedUser.id, newStatus)) {
+        let success = false;
+        if (newStatus === 'subscription') {
+            success = await updateUserSubscription(selectedUser.id, subscriptionDuration);
+        } else {
+            success = await updateUserStatus(selectedUser.id, newStatus);
+        }
+
+        if (success) {
             fetchUsers();
             setStatusMessage({ type: 'success', message: `Status for ${selectedUser.username} has been updated.` });
         } else {
@@ -112,6 +135,26 @@ const AdminDashboardView: React.FC = () => {
         setTimeout(() => setStatusMessage(null), 4000);
     };
     
+    const handleForceLogout = () => {
+        if (!selectedUser) return;
+        setIsConfirmLogoutOpen(true);
+    };
+
+    const executeForceLogout = async () => {
+        if (!selectedUser) return;
+        
+        if (await forceUserLogout(selectedUser.id)) {
+            await fetchUsers();
+            setStatusMessage({ type: 'success', message: `${selectedUser.username}'s session has been terminated.` });
+        } else {
+             setStatusMessage({ type: 'error', message: 'Failed to terminate session.' });
+        }
+        setIsModalOpen(false);
+        setIsConfirmLogoutOpen(false);
+        setSelectedUser(null);
+        setTimeout(() => setStatusMessage(null), 4000);
+    };
+
 
     const handleExport = async () => {
         setStatusMessage(null);
@@ -150,34 +193,33 @@ const AdminDashboardView: React.FC = () => {
         const file = event.target.files?.[0];
         if (!file) return;
 
-        if (!window.confirm("Are you sure you want to replace all existing user data with the contents of this file? This action cannot be undone.")) {
-            if(event.target) event.target.value = '';
-            return;
-        }
+        if (window.confirm("Are you sure you want to replace all existing user data with the contents of this file? This action cannot be undone.")) {
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                try {
+                    const text = e.target?.result;
+                    if (typeof text !== 'string') throw new Error("Failed to read file.");
+                    
+                    const importedUsers = JSON.parse(text);
+                    const result = await replaceUsers(importedUsers);
 
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-            try {
-                const text = e.target?.result;
-                if (typeof text !== 'string') throw new Error("Failed to read file.");
-                
-                const importedUsers = JSON.parse(text);
-                const result = await replaceUsers(importedUsers);
-
-                if (result.success) {
-                    setStatusMessage({ type: 'success', message: result.message });
-                    fetchUsers(); // Refresh the view
-                } else {
-                    setStatusMessage({ type: 'error', message: result.message });
+                    if (result.success) {
+                        setStatusMessage({ type: 'success', message: result.message });
+                        fetchUsers(); // Refresh the view
+                    } else {
+                        setStatusMessage({ type: 'error', message: result.message });
+                    }
+                } catch (error) {
+                    setStatusMessage({ type: 'error', message: `Error importing file: ${error instanceof Error ? error.message : 'Invalid file format.'}` });
+                } finally {
+                     if(event.target) event.target.value = '';
+                     setTimeout(() => setStatusMessage(null), 5000);
                 }
-            } catch (error) {
-                setStatusMessage({ type: 'error', message: `Error importing file: ${error instanceof Error ? error.message : 'Invalid file format.'}` });
-            } finally {
-                 if(event.target) event.target.value = '';
-                 setTimeout(() => setStatusMessage(null), 5000);
-            }
-        };
-        reader.readAsText(file);
+            };
+            reader.readAsText(file);
+        } else {
+            if(event.target) event.target.value = '';
+        }
     };
 
 
@@ -245,7 +287,7 @@ const AdminDashboardView: React.FC = () => {
                                 <tr>
                                     <th scope="col" className="px-4 py-3">#</th>
                                     <th scope="col" className="px-6 py-3">
-                                        Username
+                                        Username / Activity
                                     </th>
                                     <th scope="col" className="px-6 py-3">
                                         Email
@@ -268,11 +310,35 @@ const AdminDashboardView: React.FC = () => {
                                 {filteredUsers.length > 0 ? (
                                     filteredUsers.map((user, index) => {
                                         const { text, color } = formatStatus(user);
+                                        
+                                        // FIX: Explicitly type activeInfo to allow color to be 'green', 'gray', or 'red'.
+                                        let activeInfo: { text: string; color: 'green' | 'gray' | 'red'; fullDate: string; } = { text: 'Never', color: 'red', fullDate: 'N/A' };
+                                        if (user.lastSeenAt) {
+                                            const lastSeenDate = new Date(user.lastSeenAt);
+                                            const diffMinutes = (new Date().getTime() - lastSeenDate.getTime()) / (1000 * 60);
+                                            if (diffMinutes < 2) {
+                                                activeInfo = { text: 'Active now', color: 'green', fullDate: lastSeenDate.toLocaleString() };
+                                            } else {
+                                                activeInfo = { text: getTimeAgo(lastSeenDate), color: 'gray', fullDate: lastSeenDate.toLocaleString() };
+                                            }
+                                        }
+                                        const activeStatusColors: Record<'green' | 'gray' | 'red', string> = {
+                                            green: 'bg-green-500',
+                                            gray: 'bg-neutral-400',
+                                            red: 'bg-red-500',
+                                        };
+
                                         return (
                                             <tr key={user.id} className="bg-white dark:bg-neutral-950 border-b dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-900/50">
                                                 <td className="px-4 py-4 font-medium text-neutral-600 dark:text-neutral-400">{index + 1}</td>
                                                 <th scope="row" className="px-6 py-4 font-medium text-neutral-900 whitespace-nowrap dark:text-white">
-                                                    {user.username || '-'}
+                                                    <div className="flex items-center gap-3">
+                                                        <span 
+                                                            className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${activeStatusColors[activeInfo.color]}`}
+                                                            title={`Last seen: ${activeInfo.text} (${activeInfo.fullDate})`}
+                                                        ></span>
+                                                        <span>{user.username || '-'}</span>
+                                                    </div>
                                                 </th>
                                                 <td className="px-6 py-4">
                                                     {user.email || '-'}
@@ -281,13 +347,17 @@ const AdminDashboardView: React.FC = () => {
                                                     {user.phone || '-'}
                                                 </td>
                                                 <td className="px-6 py-4">
-                                                    {user.status === 'trial' && user.subscriptionExpiry ? (
-                                                        <TrialCountdown expiry={user.subscriptionExpiry} />
-                                                    ) : (
+                                                    <div>
                                                         <span className={`px-2 py-1 rounded-full text-xs font-semibold ${statusColors[color]}`}>
                                                             {text}
                                                         </span>
-                                                    )}
+                                                        {user.status === 'subscription' && user.subscriptionExpiry && (
+                                                            <div className="text-xs text-neutral-500 mt-1">
+                                                                Expires: {new Date(user.subscriptionExpiry).toLocaleDateString()}
+                                                                {Date.now() > user.subscriptionExpiry && <span className="text-red-500 font-bold"> (Expired)</span>}
+                                                            </div>
+                                                        )}
+                                                    </div>
                                                 </td>
                                                 <td className="px-6 py-4">
                                                     <button 
@@ -360,8 +430,33 @@ const AdminDashboardView: React.FC = () => {
                                     <option value="inactive">Inactive</option>
                                 </select>
                             </div>
+                            {newStatus === 'subscription' && (
+                                <div className="mt-4 p-3 bg-neutral-100 dark:bg-neutral-700/50 rounded-md">
+                                    <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">
+                                        Subscription Duration
+                                    </label>
+                                    <div className="flex gap-4">
+                                        <label className="flex items-center">
+                                            <input type="radio" name="duration" value={6} checked={subscriptionDuration === 6} onChange={() => setSubscriptionDuration(6)} className="form-radio" />
+                                            <span className="ml-2">6 Months</span>
+                                        </label>
+                                        <label className="flex items-center">
+                                            <input type="radio" name="duration" value={12} checked={subscriptionDuration === 12} onChange={() => setSubscriptionDuration(12)} className="form-radio" />
+                                            <span className="ml-2">12 Months</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            )}
                         </div>
-                        <div className="mt-6 flex justify-end gap-2">
+                        <div className="mt-6 flex justify-between items-center">
+                            <button
+                                onClick={handleForceLogout}
+                                className="px-4 py-2 text-sm font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
+                            >
+                                <XIcon className="w-4 h-4" />
+                                Force Logout
+                            </button>
+                            <div className="flex gap-2">
                                 <button
                                     onClick={() => setIsModalOpen(false)}
                                     className="px-4 py-2 text-sm font-semibold bg-neutral-200 dark:bg-neutral-600 rounded-lg hover:bg-neutral-300 dark:hover:bg-neutral-500 transition-colors"
@@ -374,9 +469,22 @@ const AdminDashboardView: React.FC = () => {
                                 >
                                     Update Status
                                 </button>
+                            </div>
                         </div>
                     </div>
                 </div>
+            )}
+            
+            {isConfirmLogoutOpen && selectedUser && (
+                <ConfirmationModal
+                    isOpen={isConfirmLogoutOpen}
+                    title="Confirm Force Logout"
+                    message={`Are you sure you want to terminate ${selectedUser.username}'s current session? They will be immediately logged out, but their account will remain active.`}
+                    onConfirm={executeForceLogout}
+                    onCancel={() => setIsConfirmLogoutOpen(false)}
+                    confirmText="Force Logout"
+                    confirmButtonClass="bg-red-600 hover:bg-red-700"
+                />
             )}
 
             {isHealthModalOpen && (
