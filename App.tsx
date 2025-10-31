@@ -290,6 +290,8 @@ const App: React.FC = () => {
         if (savedUserJson) {
             const user = JSON.parse(savedUserJson);
             setCurrentUser(user);
+            // THIS IS THE FIX: Set session start time on every app load for a logged-in user.
+            sessionStorage.setItem('session_started_at', new Date().toISOString());
         }
     } catch (error) {
         console.error("Failed to parse user from localStorage", error);
