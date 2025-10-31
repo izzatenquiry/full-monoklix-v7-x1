@@ -128,7 +128,7 @@ const ProfilePanel: React.FC<Pick<SettingsViewProps, 'currentUser' | 'onUserUpda
                     Have questions or need assistance? Join our support group on WhatsApp.
                 </p>
                 <a
-                    href="https://api.whatsapp.com/send?phone=60176266079"
+                    href="https://chat.whatsapp.com/IbafWDDNTzMLy4rmETou6i"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center justify-center gap-3 w-full sm:w-auto bg-[#25D366] text-white font-bold py-3 px-6 rounded-lg hover:bg-[#1DAE54] transition-colors shadow-md"
